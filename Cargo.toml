@@ -6,6 +6,7 @@ authors = ["Vrtgs"]
 repository = "https://github.com/Vrtgs/vt-muxer.git"
 documentation = "https://docs.rs/vt-muxer"
 license = "Apache-2.0 OR MIT"
+description = "Mux one TCP stream into many"
 
 [dependencies]
 tokio = { version = "1.44.2", features = ["io-util", "sync", "net", "rt"] }
