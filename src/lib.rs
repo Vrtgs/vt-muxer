@@ -25,6 +25,17 @@ mod integers;
 type Writer = OwnedWriteHalf;
 type Reader = BufReader<OwnedReadHalf>;
 
+/// Represents a multiplexed connection.
+///
+/// # Usage
+///
+/// This struct is intended to be used in networking or IPC (Inter-Process
+/// Communication) systems where multiplexing is required. The writer and
+/// reader components work together to manage input/output streams.
+///
+/// Note: Ensure proper synchronization and error handling when dealing
+/// with concurrent reads and writes to avoid potential data races or
+/// inconsistencies.
 pub struct MuxConnection {
     write: Box<WriteInner>,
     read: ReaderInner
@@ -63,6 +74,20 @@ impl AsyncRead for MuxConnection {
     }
 }
 
+
+/// # MuxPipe
+/// 
+/// The client-side interface for creating multiplexed connections over a single TCP stream.
+/// This can also be used by the server, but this structure can only initiate connection
+/// and can't accept them
+///
+/// ## Important Notes
+/// 
+/// - `MuxPipe` is designed to be used with a `MuxListener` on the server side.
+/// - The struct implements `Clone`, allowing it to be safely shared between multiple tasks.
+/// - All logical connections created through a single `MuxPipe` share the same underlying TCP connection.
+/// - The socket addresses used with `add_connection` serve as identifiers for the logical connections and don't represent actual network endpoints.
+/// - The implementation uses Tokio for async I/O operations, so it must be used within a Tokio runtime.
 #[derive(Clone)]
 pub struct MuxPipe {
     write: Arc<Mutex<Writer>>,
@@ -70,6 +95,7 @@ pub struct MuxPipe {
 }
 
 impl MuxPipe {
+    /// Creates a new `MuxPipe` from a TCP stream. This takes ownership of the stream and splits it into read and write halves for multiplexing.
     pub fn new(stream: TcpStream) -> Self {
         MuxListener::with_listener_capacity(stream, 0).into_pipe()
     }
@@ -78,6 +104,50 @@ impl MuxPipe {
         WriteInner::box_new((addr, PollMutex::new(Arc::clone(&self.write))))
     }
     
+    
+    /// Creates a new logical connection with the specified socket address. This performs a handshake with the remote end to establish the connection.
+    /// 
+    /// #### Parameters
+    /// - `addr`: The socket address to use for identifying the logical connection
+    /// 
+    /// #### Returns
+    /// - `io::Result<MuxConnection>`: A result containing the new multiplexed connection if successful
+    /// 
+    /// ## Usage Example
+    /// 
+    /// ```rust
+    /// # use std::io;
+    /// # use vt_muxer::MuxPipe;
+    /// # use tokio::net::TcpStream;
+    /// # use tokio::io::AsyncWriteExt;
+    ///
+    /// async fn example() -> io::Result<()> {
+    ///     // Create a TCP connection to the server
+    ///     let tcp_stream = TcpStream::connect("server_address:port").await?;
+    ///     
+    ///     // Create a multiplexer over the TCP stream
+    ///     let mux = MuxPipe::new(tcp_stream);
+    ///     
+    ///     // Create multiple logical connections over the same TCP stream
+    ///     let addr1 = "127.0.0.1:12345".parse().unwrap();
+    ///     let mut connection1 = mux.add_connection(addr1).await?;
+    ///     
+    ///     let addr2 = "127.0.0.1:12346".parse().unwrap();
+    ///     let mut connection2 = mux.add_connection(addr2).await?;
+    ///     
+    ///     // Use the connections independently
+    ///     connection1.write_all(b"Data for connection 1").await?;
+    ///     connection2.write_all(b"Data for connection 2").await?;
+    ///     
+    ///     // Don't forget to properly shut down connections when done
+    ///     connection1.shutdown().await?;
+    ///     connection2.shutdown().await?;
+    ///     
+    ///     Ok(())
+    /// }
+    /// ```
+    /// 
+    ///
     pub async fn add_connection(&self, addr: SocketAddr) -> io::Result<MuxConnection> {
         let reader = self.read.add_connection(addr)?;
         let mut writer = self.make_writer(addr);
@@ -86,6 +156,15 @@ impl MuxPipe {
     }
 }
 
+
+
+
+/// `MuxListener` is a structure designed to manage and listen for incoming multiplexed connections.
+
+///
+/// # Purpose
+/// The `MuxListener` serves as an abstraction to handle incoming connections from a MuxPipe,
+/// please note that once discarded there is no way of listening to new incoming connections
 pub struct MuxListener {
     pipe: MuxPipe,
     receiver: flume::Receiver<(SocketAddr, ReaderInner)>
