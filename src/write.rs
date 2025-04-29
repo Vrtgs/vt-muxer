@@ -462,9 +462,8 @@ mod tests {
         let (mut stream, mut writer) = make_pipe().await;
         
         // speed is needed here so tests don't take an astronomical amount of time to run
-        let mut payload = Arc::<[u8; 1 << 28]>::new_uninit();
+        let mut payload = Arc::<[u8; 1 << 30]>::new_uninit();
         let mut rng = Xoshiro512StarStar::from_os_rng();
-        
         
         let payload_mut = Arc::get_mut(&mut payload).unwrap();
         unsafe {
