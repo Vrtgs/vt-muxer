@@ -2,6 +2,10 @@
 name = "vt-muxer"
 version = "0.1.0"
 edition = "2024"
+authors = ["Vrtgs"]
+repository = "https://github.com/Vrtgs/vt-muxer.git"
+documentation = "https://docs.rs/vt-muxer"
+license = "Apache-2.0 OR MIT"
 
 [dependencies]
 tokio = { version = "1.44.2", features = ["io-util", "sync", "net", "rt"] }
