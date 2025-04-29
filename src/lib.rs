@@ -198,20 +198,20 @@ mod tests {
         let addr2 = "127.0.0.1:12346".parse::<SocketAddr>().unwrap();
 
         let client_task = async {
-            let mut conn1 = mux_pipe_client.add_connection(addr1).await.unwrap();
-            let mut conn2 = mux_pipe_client.add_connection(addr2).await.unwrap();
-
-            conn1.write_all(b"first connection").await.unwrap();
-            conn1.flush().await.unwrap();
-
-            conn2.write_all(b"second connection").await.unwrap();
-            conn2.flush().await.unwrap();
+            let handle = async |addr, bytes| {
+                let mut conn = mux_pipe_client.add_connection(addr).await?;
+                conn.write_all(bytes).await?;
+                conn.flush().await?;
+                conn.shutdown().await
+            };
+            
+            tokio::try_join!(handle(addr1, b"first connection"), handle(addr2, b"second connection"))
         };
 
         let server_task = async {
-            let (mut conn1, mut conn2) = async {
-                let conn1 = mux_pipe_server.accept().await.unwrap();
-                let conn2 = mux_pipe_server.accept().await.unwrap();
+            let (mut conn1, mut conn2) = {
+                let conn1 = mux_pipe_server.accept().await?;
+                let conn2 = mux_pipe_server.accept().await?;
                 
                 match (conn1.addr(), conn2.addr()) {
                     (con1, con2) if con1 == addr1 && con2 == addr2 => {
@@ -222,17 +222,18 @@ mod tests {
                     }
                     _ => unreachable!()
                 }
-            }.await;
+            };
             
             let mut buf1 = vec![];
-            let n1 = conn1.read_to_end(&mut buf1).await.unwrap();
+            let n1 = conn1.read_to_end(&mut buf1).await?;
             assert_eq!(&buf1[..n1], b"first connection");
 
             let mut buf2 = vec![];
-            let n2 = conn2.read_to_end(&mut buf2).await.unwrap();
+            let n2 = conn2.read_to_end(&mut buf2).await?;
             assert_eq!(&buf2[..n2], b"second connection");
+            Ok(())
         };
 
-        tokio::join!(client_task, server_task);
+        tokio::try_join!(client_task, server_task).unwrap();
     }
 }

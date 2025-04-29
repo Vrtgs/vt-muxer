@@ -1,9 +1,12 @@
+use std::convert::Infallible;
 use std::io;
 use std::io::Error;
 use std::pin::Pin;
+use std::sync::LazyLock;
 use std::task::{ready, Context, Poll, Waker};
 use replace_with::replace_with_or_abort_and_return;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
+use tokio::runtime::Handle;
 use tokio::sync::OwnedMutexGuard;
 use crate::thin_addr::SocketAddr;
 use crate::constructor::Construct;
@@ -368,7 +371,7 @@ impl Drop for WriteInner {
 
         let socket = self.buffer.addr();
 
-        tokio::spawn(async move {
+        let future = async move {
             let mut mutex;
             let mut late_lock;
             let mut early_lock;
@@ -397,7 +400,31 @@ impl Drop for WriteInner {
 
             let eof_header = MuxFrameHeader::empty(socket);
             let _ = lock.write_all(bytemuck::bytes_of(&eof_header)).await;
+        };
+
+        static GLOBAL_RT: LazyLock<Handle> =  LazyLock::new(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_io()
+                .build()
+                .unwrap();
+
+            let handle = runtime.handle().clone();
+
+            std::thread::spawn(move || {
+                runtime.block_on(std::future::pending::<Infallible>())
+            });
+
+            handle
         });
+
+        // runtime may shutdown any time, and that will ruin the rest of the connections by mangling the protocol.
+        // run the future in a new thread, so even if the runtime running this future is shutdown,
+        // as long as the original runtime where the TcpStream was first created is not shutdown
+        // this future will still run to completion
+
+        // but since this global runtime never enters shutdown so we can just spawn directly
+        // and as long as the program is running it is in our best interest to keep the protocol intact
+        let _ = GLOBAL_RT.spawn(future);
     }
 }
 
@@ -457,14 +484,14 @@ mod tests {
         assert_eq!(stream.read(&mut [0]).await.unwrap(), 0, "stream had too much data")
     }
 
-    #[tokio::test]
-    async fn test_write() {
-        let (mut stream, mut writer) = make_pipe().await;
-        
+    
+    pub fn generate_payload<const N: usize>() -> Arc<[u8; N]> {
         // speed is needed here so tests don't take an astronomical amount of time to run
-        let mut payload = Arc::<[u8; 1 << 30]>::new_uninit();
-        let mut rng = Xoshiro512StarStar::from_os_rng();
         
+        let mut payload = Arc::<[u8; N]>::new_uninit();
+        
+        let mut rng = Xoshiro512StarStar::from_os_rng();
+
         let payload_mut = Arc::get_mut(&mut payload).unwrap();
         unsafe {
             let byte = rng.next_u32() as u8;
@@ -475,10 +502,20 @@ mod tests {
             );
             MaybeUninit::assume_init_mut(payload_mut);
         };
-        let payload = unsafe { payload.assume_init() };
+        
+        unsafe { payload.assume_init() }
+    }
+    
+    #[tokio::test]
+    async fn test_write() {
+        let (mut stream, mut writer) = make_pipe().await;
+        
+        let payload = generate_payload::<{ 1 << 30 }>();
         
         let send_payload = Arc::clone(&payload);
         tokio::spawn(async move {
+            let mut rng = Xoshiro512StarStar::from_os_rng();
+            
             // make sure empty flushes do nothing
             writer.flush().await.unwrap();
             let mut payload = send_payload.as_slice();
@@ -564,11 +601,12 @@ mod tests {
             inner_writer.handshake().await.unwrap();
 
             // Create a unique payload for this connection
-            let mut payload = [0x4F; 8192]; // Smaller payload for parallel test
+            // Smaller payload for parallel test
+            
+            let mut payload = generate_payload::<8192>();
             // Mark the first byte with the connection index to help with debugging
-            payload[0] = (i % 256) as u8;
-
-            let payload = Arc::new(payload);
+            
+            Arc::get_mut(&mut payload).unwrap()[0] = (i % 256) as u8;
             payload_refs.push(Arc::clone(&payload));
             writers.push(inner_writer);
         }
